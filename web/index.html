@@ -1,0 +1,197 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>回答者</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="mobile-drawer-backdrop" class="mobile-drawer-backdrop hidden"></div>
+      <header class="mobile-topbar">
+        <button id="open-left-drawer" class="mobile-icon-button" type="button" aria-label="打开对话列表">☰</button>
+        <div class="mobile-title">回答者</div>
+        <button id="open-right-drawer" class="mobile-icon-button" type="button" aria-label="打开思维栏">◌</button>
+      </header>
+
+      <aside class="conversation-sidebar">
+        <button id="close-left-drawer" class="mobile-drawer-close" type="button" aria-label="关闭对话列表">×</button>
+        <div class="conversation-sidebar-header">
+          <button id="create-conversation" class="primary-button sidebar-create-button" type="button">新增对话窗口</button>
+          <button id="toggle-conversation-delete" class="ghost-button sidebar-delete-toggle" type="button" title="切换删除对话">
+            🗑
+          </button>
+        </div>
+        <div id="conversation-list" class="conversation-list"></div>
+        <div class="conversation-sidebar-footer">
+          <button id="toggle-settings" class="ghost-button sidebar-settings-button" type="button">设置</button>
+        </div>
+      </aside>
+
+      <section class="app-main">
+        <section id="settings-panel" class="settings-panel hidden">
+          <div class="settings-header">
+            <div>
+              <p class="eyebrow">Settings</p>
+              <h2>接口配置</h2>
+            </div>
+            <button id="save-settings" class="ghost-button" type="button">保存配置</button>
+          </div>
+
+          <div class="settings-grid">
+            <label class="field settings-span-2">
+              <span>API URL</span>
+              <input id="api-url" type="text" placeholder="https://api.openai.com/v1" />
+              <small class="field-hint">
+                可填写 `https://api.openai.com/v1`、`.../chat/completions` 或 `.../responses`
+              </small>
+            </label>
+            <label class="field settings-span-3">
+              <span>API Key</span>
+              <input id="api-key" type="password" placeholder="sk-..." />
+            </label>
+            <label class="field settings-span-3">
+              <span>主题配色</span>
+              <select id="theme-select">
+                <option value="default-theme">默认配色</option>
+                <option value="quiet-blue-purple-gray">静谧蓝紫灰</option>
+                <option value="cream-macaron">奶油马卡龙</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <main class="main-card">
+          <section id="chat-view" class="view-panel">
+            <div id="empty-state" class="empty-state">
+              这是一个空白对话窗口，直接输入问题开始对话。
+            </div>
+            <div id="chat-list" class="chat-list"></div>
+          </section>
+
+          <section id="knowledge-view" class="view-panel hidden">
+            <div class="knowledge-toolbar">
+              <div>
+                <p class="eyebrow">Knowledge</p>
+                <h2>主题地图</h2>
+              </div>
+              <div class="knowledge-toolbar-actions">
+                <button id="today-filter" class="ghost-button" type="button">今日</button>
+                <button id="build-knowledge" class="ghost-button" type="button">立即整理</button>
+              </div>
+            </div>
+
+            <div id="knowledge-status" class="knowledge-status">
+              知识库会在后台每小时自动检查一次。
+            </div>
+
+            <div class="knowledge-layout">
+              <aside class="knowledge-sidebar">
+                <div id="knowledge-node-list" class="knowledge-node-list"></div>
+              </aside>
+
+              <section class="knowledge-main">
+                <div id="knowledge-map-empty" class="empty-state">
+                  还没有知识节点。继续提问，或点击“立即整理”生成第一版主题地图。
+                </div>
+
+                <div id="knowledge-map-stage" class="knowledge-map-stage hidden">
+                  <svg id="knowledge-map-lines" class="knowledge-map-lines"></svg>
+                  <div id="knowledge-map-nodes" class="knowledge-map-nodes"></div>
+                </div>
+
+                <div id="knowledge-detail" class="knowledge-detail">
+                  选中一个节点后，会在这里看到知识摘要、关联问题和邻接节点。
+                </div>
+              </section>
+            </div>
+          </section>
+        </main>
+
+        <form id="ask-form" class="composer">
+          <label class="field composer-field">
+            <button id="model-toggle" class="status-pill model-toggle" type="button">gpt-5.4</button>
+            <textarea
+              id="question-input"
+              rows="4"
+              placeholder="输入一个不会污染主工作流上下文的小问题..."
+            ></textarea>
+          </label>
+          <div class="composer-actions">
+            <div class="composer-meta">
+              <div id="form-message" class="form-message"></div>
+            </div>
+            <div class="composer-buttons">
+              <button id="ask-button" class="primary-button" type="submit" title="Tab+Enter快捷发送">发送</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <aside id="thought-map-sidebar" class="thought-map-sidebar">
+        <button id="close-right-drawer" class="mobile-drawer-close" type="button" aria-label="关闭思维栏">×</button>
+        <div class="thought-map-header">
+          <div>
+            <p class="eyebrow">Thought Map</p>
+            <h2>思维地图</h2>
+          </div>
+          <button id="toggle-knowledge" class="ghost-button thought-map-toggle" type="button">知识地图</button>
+        </div>
+
+        <div id="thought-map-status" class="thought-map-status">
+          手机端仅保留占位，本版不运行思维地图功能。
+        </div>
+
+        <div id="thought-map-empty" class="empty-state thought-map-empty">
+          功能迭代中，暂时停用。当前先专注稳定问答主流程，后续再恢复思维链整理能力。
+        </div>
+
+        <div id="thought-map-stage" class="thought-map-stage hidden">
+          <svg id="thought-map-lines" class="thought-map-lines"></svg>
+          <div id="thought-map-nodes" class="thought-map-nodes"></div>
+        </div>
+
+        <div id="thought-map-detail" class="thought-map-detail">
+          这里预留给后续版本的思维链节点详情。
+        </div>
+      </aside>
+    </div>
+
+    <div id="conversation-mode-modal" class="mode-modal hidden">
+      <div class="mode-modal-backdrop"></div>
+      <div class="mode-modal-card">
+        <p class="eyebrow">New Conversation</p>
+        <h2>选择对话模式</h2>
+        <div class="mode-modal-options">
+          <button id="create-single-conversation" class="mode-option" type="button">
+            <span class="mode-option-title">单点</span>
+            <span class="mode-option-desc">每一个问题毫无上下文关联，适合询问琐碎知识点。</span>
+          </button>
+          <button id="create-memory-conversation" class="mode-option" type="button">
+            <span class="mode-option-title">记忆</span>
+            <span class="mode-option-desc">需要参考前面问答内容，上下有逻辑联系的。</span>
+          </button>
+        </div>
+        <div class="mode-modal-actions">
+          <button id="cancel-create-conversation" class="ghost-button" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="note-search-modal" class="note-search-modal hidden">
+      <div class="note-search-card">
+        <div class="note-search-header">
+          <div>
+            <p class="eyebrow">Local Notes</p>
+            <h2 id="note-search-title">笔记搜索结果</h2>
+          </div>
+          <button id="close-note-search" class="ghost-button note-search-close" type="button">×</button>
+        </div>
+        <div id="note-search-body" class="note-search-body"></div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

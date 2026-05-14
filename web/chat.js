@@ -1,0 +1,719 @@
+import { state } from './state.js';
+import { loadKnowledgeStatus } from './knowledge.js';
+import { collectSettings, saveSettings } from './settings.js';
+import {
+  closeMobileDrawers,
+  els,
+  formatTime,
+  hideConversationModeModal,
+  invoke,
+  openMobileDrawer,
+  relationLabel,
+  renderConversationDeleteToggle,
+  resetQuestionInputHeight,
+  resizeQuestionInput,
+  setAskModel,
+  setFormMessage,
+  setMemoryMode,
+  showConversationModeModal,
+} from './ui.js';
+
+function getPendingRecords(conversationId) {
+  return state.pendingRecordsByConversation.get(conversationId) || [];
+}
+
+function setPendingRecords(conversationId, records) {
+  if (!records.length) {
+    state.pendingRecordsByConversation.delete(conversationId);
+    return;
+  }
+  state.pendingRecordsByConversation.set(conversationId, records);
+}
+
+function addPendingRecord(conversationId, record) {
+  setPendingRecords(conversationId, [...getPendingRecords(conversationId), record]);
+}
+
+function replacePendingRecord(conversationId, recordId, nextRecord) {
+  setPendingRecords(
+    conversationId,
+    getPendingRecords(conversationId).map((record) =>
+      record.id === recordId ? nextRecord : record
+    )
+  );
+}
+
+function removePendingRecord(conversationId, recordId) {
+  setPendingRecords(
+    conversationId,
+    getPendingRecords(conversationId).filter((record) => record.id !== recordId)
+  );
+}
+
+function conversationHasPending(conversationId) {
+  return getPendingRecords(conversationId).some(
+    (record) => record.answer === 'Thinking...' && !record.errorMessage
+  );
+}
+
+function appendInlineFormatted(target, text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  parts.forEach((part) => {
+    if (!part) {
+      return;
+    }
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      const strong = document.createElement('strong');
+      strong.textContent = part.slice(2, -2);
+      target.appendChild(strong);
+    } else {
+      target.appendChild(document.createTextNode(part));
+    }
+  });
+}
+
+function flushParagraph(lines, bubble) {
+  if (!lines.length) {
+    return;
+  }
+  const paragraph = document.createElement('p');
+  paragraph.className = 'bubble-paragraph';
+  appendInlineFormatted(paragraph, lines.join(' '));
+  bubble.appendChild(paragraph);
+  lines.length = 0;
+}
+
+function flushList(items, bubble) {
+  if (!items.length) {
+    return;
+  }
+  const list = document.createElement('ul');
+  list.className = 'bubble-list';
+  items.forEach((itemText) => {
+    const item = document.createElement('li');
+    appendInlineFormatted(item, itemText);
+    list.appendChild(item);
+  });
+  bubble.appendChild(list);
+  items.length = 0;
+}
+
+function renderBubbleContent(bubble, text, variant) {
+  bubble.textContent = '';
+
+  if (variant === 'user' || variant === 'error') {
+    bubble.textContent = text;
+    return;
+  }
+
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const paragraphLines = [];
+  const listItems = [];
+  let inCodeBlock = false;
+  let codeLines = [];
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      if (inCodeBlock) {
+        const pre = document.createElement('pre');
+        pre.className = 'bubble-code';
+        pre.textContent = codeLines.join('\n');
+        bubble.appendChild(pre);
+        codeLines = [];
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+      }
+      return;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      return;
+    }
+
+    if (!trimmed) {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      return;
+    }
+
+    if (trimmed.startsWith('### ')) {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      const title = document.createElement('h4');
+      title.className = 'bubble-heading bubble-heading-small';
+      appendInlineFormatted(title, trimmed.slice(4));
+      bubble.appendChild(title);
+      return;
+    }
+
+    if (trimmed.startsWith('## ')) {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      const title = document.createElement('h3');
+      title.className = 'bubble-heading bubble-heading-medium';
+      appendInlineFormatted(title, trimmed.slice(3));
+      bubble.appendChild(title);
+      return;
+    }
+
+    if (trimmed.startsWith('# ')) {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      const title = document.createElement('h2');
+      title.className = 'bubble-heading bubble-heading-large';
+      appendInlineFormatted(title, trimmed.slice(2));
+      bubble.appendChild(title);
+      return;
+    }
+
+    if (trimmed === '---') {
+      flushParagraph(paragraphLines, bubble);
+      flushList(listItems, bubble);
+      const divider = document.createElement('hr');
+      divider.className = 'bubble-divider';
+      bubble.appendChild(divider);
+      return;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      flushParagraph(paragraphLines, bubble);
+      listItems.push(trimmed.slice(2));
+      return;
+    }
+
+    flushList(listItems, bubble);
+    paragraphLines.push(trimmed);
+  });
+
+  if (inCodeBlock) {
+    const pre = document.createElement('pre');
+    pre.className = 'bubble-code';
+    pre.textContent = codeLines.join('\n');
+    bubble.appendChild(pre);
+  }
+
+  flushParagraph(paragraphLines, bubble);
+  flushList(listItems, bubble);
+
+  if (!bubble.childNodes.length) {
+    bubble.textContent = text;
+  }
+}
+
+function createBubble(roleLabel, text, variant = 'assistant') {
+  const row = document.createElement('article');
+  row.className = 'chat-row';
+
+  const role = document.createElement('div');
+  role.className = 'chat-role';
+  role.textContent = roleLabel;
+
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${variant}`;
+  renderBubbleContent(bubble, text, variant);
+
+  row.append(role, bubble);
+  return { row, bubble };
+}
+
+function createRetryButton(record) {
+  if (!record.retryAvailable) {
+    return null;
+  }
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'retry-button';
+  button.textContent = '重新发送';
+  button.addEventListener('click', () => {
+    retryQuestion(record).catch((error) => {
+      setFormMessage(String(error), 'error');
+    });
+  });
+  return button;
+}
+
+function createRawResponseSection(record) {
+  if (!record.rawResponse) {
+    return null;
+  }
+
+  const wrapper = document.createElement('div');
+  const expanded = state.expandedRawResponseIds.has(record.id);
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'response-toggle';
+  toggle.textContent = expanded ? '隐藏响应字段' : '查看响应字段';
+  toggle.addEventListener('click', () => {
+    if (expanded) {
+      state.expandedRawResponseIds.delete(record.id);
+    } else {
+      state.expandedRawResponseIds.add(record.id);
+    }
+    renderRecords();
+  });
+
+  wrapper.appendChild(toggle);
+
+  if (expanded) {
+    const raw = document.createElement('pre');
+    raw.className = 'response-raw';
+    raw.textContent = record.rawResponse;
+    wrapper.appendChild(raw);
+  }
+
+  return wrapper;
+}
+
+function closeNoteSearchModal() {
+  els.noteSearchModal?.classList.add('hidden');
+}
+
+function showNoteSearchModal(result) {
+  if (!els.noteSearchModal || !els.noteSearchBody || !els.noteSearchTitle) {
+    return;
+  }
+
+  els.noteSearchTitle.textContent = result.query
+    ? `笔记搜索：${result.query}`
+    : '笔记搜索结果';
+  els.noteSearchBody.innerHTML = '';
+
+  const summary = document.createElement('div');
+  summary.className = 'note-search-summary';
+  summary.textContent = result.message || '搜索完成。';
+  els.noteSearchBody.appendChild(summary);
+
+  if (!result.matches?.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = '没有找到相关笔记。';
+    els.noteSearchBody.appendChild(empty);
+  } else {
+    result.matches.forEach((match) => {
+      const item = document.createElement('article');
+      item.className = 'note-search-item';
+
+      const content = document.createElement('div');
+      content.className = 'note-search-content';
+      content.textContent = match.content;
+
+      const source = document.createElement('div');
+      source.className = 'note-search-source';
+      source.textContent = `${formatTime(match.createdAt)} · 来源问题：${match.sourceQuestion}`;
+
+      item.append(content, source);
+      els.noteSearchBody.appendChild(item);
+    });
+  }
+
+  els.noteSearchModal.classList.remove('hidden');
+}
+
+function handleLocalToolResults(toolResults = []) {
+  if (!toolResults.length) {
+    return;
+  }
+
+  const noteResults = toolResults.filter((result) => result.tool === 'note');
+  const searchResults = toolResults.filter((result) => result.tool === 'search');
+
+  if (noteResults.length) {
+    const latestNote = noteResults[noteResults.length - 1];
+    setFormMessage(latestNote.message, latestNote.ok ? 'success' : 'error');
+  }
+
+  if (searchResults.length) {
+    showNoteSearchModal(searchResults[searchResults.length - 1]);
+  }
+}
+
+export function renderRecords() {
+  els.chatList.innerHTML = '';
+  els.emptyState.hidden = state.records.length > 0;
+
+  state.records.forEach((record) => {
+    const userPart = createBubble('User', record.question, 'user');
+    const retryButton = createRetryButton(record);
+    if (retryButton) {
+      userPart.bubble.appendChild(retryButton);
+    }
+    els.chatList.appendChild(userPart.row);
+
+    const isError = record.status === 'error' || record.status === 'unavailable';
+    const assistantText = isError
+      ? (record.errorMessage || '请求失败')
+      : (record.answer || 'Thinking...');
+
+    const assistantPart = createBubble(
+      'Assistant',
+      assistantText,
+      isError ? 'error' : 'assistant'
+    );
+
+    if (record.fallbackNotice) {
+      const notice = document.createElement('div');
+      notice.className = 'chat-fallback-notice';
+      notice.textContent = record.fallbackNotice;
+      assistantPart.bubble.prepend(notice);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'chat-record-meta';
+    const parts = [formatTime(record.createdAt)];
+    if (record.model) {
+      parts.push(record.model);
+    }
+    if (record.latencyMs !== null && record.latencyMs !== undefined) {
+      parts.push(`${record.latencyMs} ms`);
+    }
+    meta.textContent = parts.filter(Boolean).join(' ');
+    assistantPart.bubble.appendChild(meta);
+
+    const rawSection = createRawResponseSection(record);
+    if (rawSection) {
+      assistantPart.bubble.appendChild(rawSection);
+    }
+
+    els.chatList.appendChild(assistantPart.row);
+  });
+
+  els.chatList.scrollTop = els.chatList.scrollHeight;
+}
+
+export function renderConversations() {
+  els.conversationList.innerHTML = '';
+
+  state.conversations.forEach((conversation) => {
+    const item = document.createElement('div');
+    item.className = 'conversation-item';
+    if (conversation.id === state.currentConversationId) {
+      item.classList.add('active');
+    }
+    item.addEventListener('click', async () => {
+      await switchConversation(conversation.id);
+    });
+
+    const header = document.createElement('div');
+    header.className = 'conversation-item-header';
+
+    const title = document.createElement('button');
+    title.type = 'button';
+    title.className = 'conversation-title';
+    title.textContent = conversation.title || '未命名对话';
+    title.addEventListener('click', async () => {
+      await switchConversation(conversation.id);
+    });
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'conversation-delete';
+    deleteButton.textContent = '×';
+    deleteButton.title = '删除对话';
+    deleteButton.hidden = !state.conversationDeleteMode;
+    deleteButton.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await removeConversation(conversation.id);
+    });
+    const trailing = document.createElement('div');
+    trailing.className = 'conversation-item-trailing';
+
+    if (conversationHasPending(conversation.id)) {
+      const pendingIcon = document.createElement('span');
+      pendingIcon.className = 'conversation-pending-indicator';
+      pendingIcon.title = '等待回复中';
+      pendingIcon.setAttribute('aria-label', '等待回复中');
+      trailing.appendChild(pendingIcon);
+    }
+
+    trailing.appendChild(deleteButton);
+    header.append(title, trailing);
+
+    const meta = document.createElement('button');
+    meta.type = 'button';
+    meta.className = 'conversation-meta';
+    const modeLabel = conversation.mode === 'memory' ? '记忆' : '单点';
+    meta.textContent = `${modeLabel} ${formatTime(conversation.updatedAt)}`;
+    meta.addEventListener('click', async () => {
+      await switchConversation(conversation.id);
+    });
+
+    item.append(header, meta);
+    els.conversationList.appendChild(item);
+  });
+}
+
+export async function loadConversations() {
+  state.conversations = await invoke('list_conversations');
+  const preferredConversationId = state.currentConversationId ?? state.lastConversationId;
+  if (
+    preferredConversationId &&
+    state.conversations.some((item) => item.id === preferredConversationId)
+  ) {
+    state.currentConversationId = preferredConversationId;
+  } else if (
+    !state.currentConversationId ||
+    !state.conversations.some((item) => item.id === state.currentConversationId)
+  ) {
+    state.currentConversationId = state.conversations[0]?.id ?? null;
+  }
+  state.lastConversationId = state.currentConversationId;
+
+  const currentConversation = state.conversations.find(
+    (item) => item.id === state.currentConversationId
+  );
+  setMemoryMode(currentConversation?.mode || 'single');
+  renderConversations();
+}
+
+export async function loadRecords() {
+  if (!state.currentConversationId) {
+    state.records = [];
+    renderRecords();
+    return;
+  }
+
+  const databaseRecords = await invoke('list_history_records', {
+    conversationId: state.currentConversationId,
+  });
+  state.records = [...databaseRecords, ...getPendingRecords(state.currentConversationId)];
+  renderRecords();
+}
+
+export async function switchConversation(conversationId) {
+  state.currentConversationId = conversationId;
+  state.lastConversationId = conversationId;
+  const currentConversation = state.conversations.find((item) => item.id === conversationId);
+  setMemoryMode(currentConversation?.mode || 'single');
+  renderConversations();
+  await loadRecords();
+  await saveSettings(false);
+  if (window.matchMedia('(max-width: 900px)').matches) {
+    closeMobileDrawers();
+  }
+}
+
+async function createConversation(mode) {
+  const conversation = await invoke('create_conversation', { mode });
+  state.conversations.unshift(conversation);
+  state.currentConversationId = conversation.id;
+  state.lastConversationId = conversation.id;
+  state.records = [];
+  setMemoryMode(conversation.mode);
+  renderConversations();
+  renderRecords();
+  setFormMessage('');
+  hideConversationModeModal();
+  await saveSettings(false);
+}
+
+async function removeConversation(conversationId) {
+  const nextConversations = await invoke('delete_conversation', { conversationId });
+
+  state.conversations = nextConversations;
+  if (state.currentConversationId === conversationId) {
+    state.currentConversationId = nextConversations[0]?.id ?? null;
+  }
+  state.lastConversationId = state.currentConversationId;
+
+  const currentConversation = state.conversations.find(
+    (item) => item.id === state.currentConversationId
+  );
+  setMemoryMode(currentConversation?.mode || 'single');
+  renderConversations();
+  await loadRecords();
+  await saveSettings(false);
+}
+
+function toggleConversationDeleteMode() {
+  state.conversationDeleteMode = !state.conversationDeleteMode;
+  renderConversationDeleteToggle();
+  renderConversations();
+}
+
+function buildPendingRecord(question, conversationId) {
+  return {
+    id: `pending-${Date.now()}`,
+    conversationId,
+    question,
+    answer: 'Thinking...',
+    rawResponse: null,
+    fallbackNotice: null,
+    createdAt: Date.now(),
+    model: 'gpt-5.4',
+    latencyMs: null,
+    status: 'success',
+    errorMessage: null,
+    retryAvailable: false,
+  };
+}
+
+function renderPendingRecord(conversationId, record) {
+  addPendingRecord(conversationId, record);
+  renderConversations();
+  if (state.currentConversationId === conversationId) {
+    state.records = [...state.records, record];
+    renderRecords();
+  }
+}
+
+function replaceRenderedPendingRecord(conversationId, tempRecordId, nextRecord) {
+  replacePendingRecord(conversationId, tempRecordId, nextRecord);
+  renderConversations();
+  if (state.currentConversationId === conversationId) {
+    state.records = state.records.map((record) =>
+      record.id === tempRecordId ? nextRecord : record
+    );
+    renderRecords();
+  }
+}
+
+function removeRenderedPendingRecord(conversationId, tempRecordId) {
+  removePendingRecord(conversationId, tempRecordId);
+  renderConversations();
+  if (state.currentConversationId === conversationId) {
+    state.records = state.records.filter((record) => record.id !== tempRecordId);
+    renderRecords();
+  }
+}
+
+export async function askQuestion(event) {
+  event.preventDefault();
+  const draftQuestion = els.questionInput.value.trim();
+  const activeConversationId = state.currentConversationId;
+  await submitQuestion(draftQuestion, activeConversationId);
+}
+
+async function retryQuestion(record) {
+  removeRenderedPendingRecord(record.conversationId, record.id);
+  await submitQuestion(record.question, record.conversationId);
+}
+
+async function submitQuestion(draftQuestion, activeConversationId) {
+  setFormMessage('');
+  const settings = collectSettings();
+
+  if (!activeConversationId) {
+    setFormMessage('请先创建一个对话窗口。', 'error');
+    return;
+  }
+
+  if (!settings.apiUrl || !settings.apiKey) {
+    setFormMessage('请先保存 API URL 和 API Key。', 'error');
+    els.settingsPanel.classList.remove('hidden');
+    return;
+  }
+
+  if (!draftQuestion) {
+    setFormMessage('问题不能为空。', 'error');
+    return;
+  }
+
+  els.askButton.disabled = true;
+  els.saveSettings.disabled = true;
+  els.questionInput.value = '';
+  resetQuestionInputHeight();
+
+  const tempRecord = buildPendingRecord(draftQuestion, activeConversationId);
+  renderPendingRecord(activeConversationId, tempRecord);
+
+  try {
+    await saveSettings(false);
+    const result = await invoke('ask', {
+      conversationId: activeConversationId,
+      question: draftQuestion,
+      useShortTermMemory: state.memoryMode === 'memory',
+    });
+
+    if (result.ok && result.record) {
+      removeRenderedPendingRecord(activeConversationId, tempRecord.id);
+      await loadRecords();
+      setFormMessage('');
+      handleLocalToolResults(result.toolResults);
+      await loadConversations();
+      loadKnowledgeStatus().catch(() => {});
+      return;
+    }
+
+    const failedRecord = {
+      ...tempRecord,
+      answer: '',
+      status: 'unavailable',
+      errorMessage: result.failureMessage || '大模型api暂不可用，稍后重试',
+      retryAvailable: !!result.retryAvailable,
+    };
+    replaceRenderedPendingRecord(activeConversationId, tempRecord.id, failedRecord);
+    setFormMessage(result.failureMessage || '大模型api暂不可用，稍后重试', 'error');
+  } catch (error) {
+    removeRenderedPendingRecord(activeConversationId, tempRecord.id);
+    setFormMessage(String(error), 'error');
+  } finally {
+    if (state.currentConversationId === activeConversationId) {
+      await loadRecords();
+    }
+    els.askButton.disabled = false;
+    els.saveSettings.disabled = false;
+  }
+}
+
+export function bindChatEvents() {
+  els.openLeftDrawer?.addEventListener('click', () => {
+    openMobileDrawer('left');
+  });
+
+  els.openRightDrawer?.addEventListener('click', () => {
+    openMobileDrawer('right');
+  });
+
+  els.closeLeftDrawer?.addEventListener('click', closeMobileDrawers);
+  els.closeRightDrawer?.addEventListener('click', closeMobileDrawers);
+  els.mobileDrawerBackdrop?.addEventListener('click', closeMobileDrawers);
+
+  els.createConversation.addEventListener('click', () => {
+    showConversationModeModal();
+  });
+
+  els.toggleConversationDelete?.addEventListener('click', () => {
+    toggleConversationDeleteMode();
+  });
+
+  els.createSingleConversation?.addEventListener('click', () => {
+    createConversation('single').catch((error) => {
+      setFormMessage(String(error), 'error');
+    });
+  });
+
+  els.createMemoryConversation?.addEventListener('click', () => {
+    createConversation('memory').catch((error) => {
+      setFormMessage(String(error), 'error');
+    });
+  });
+
+  els.cancelCreateConversation?.addEventListener('click', () => {
+    hideConversationModeModal();
+  });
+
+  els.modelToggle?.addEventListener('click', async () => {
+    const nextModel = state.askModel === 'gpt-5.5' ? 'gpt-5.4' : 'gpt-5.5';
+    setAskModel(nextModel);
+    try {
+      await saveSettings(false);
+    } catch (error) {
+      setFormMessage(String(error), 'error');
+    }
+  });
+
+  els.questionInput.addEventListener('input', () => {
+    resizeQuestionInput();
+  });
+
+  els.askForm.addEventListener('submit', askQuestion);
+  els.closeNoteSearch?.addEventListener('click', closeNoteSearchModal);
+  resizeQuestionInput();
+}
