@@ -255,12 +255,25 @@ pub(crate) async fn ask(
     let created_at = Utc::now().timestamp_millis();
     let use_memory = use_short_term_memory.unwrap_or(false);
     let prompt_mode = if use_memory { "memory" } else { "single" };
+    if let Some(existing_record) =
+        find_recent_success_record(&app, conversation_id, &trimmed_question, prompt_mode, created_at - 15_000)?
+    {
+        return Ok(AskResponse {
+            ok: true,
+            record: Some(existing_record),
+            failure_message: None,
+            retry_available: false,
+            tool_results: Vec::new(),
+        });
+    }
+
     let session_memory = if use_memory {
         load_session_memory(&app, conversation_id)?
     } else {
         SessionMemory::default()
     };
-    let system_prompt = build_chat_system_prompt();
+    let profile_memory = load_profile_memory(&app)?;
+    let system_prompt = build_chat_system_prompt(&profile_memory);
     let user_prompt = build_chat_user_prompt(
         &trimmed_question,
         if use_memory { Some(&session_memory) } else { None },
@@ -570,6 +583,8 @@ struct LocalToolCall {
     tool: String,
     content: Option<String>,
     query: Option<String>,
+    recipient_alias: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -652,6 +667,27 @@ fn local_tool_definitions() -> Vec<ChatToolDefinition> {
                 }),
             },
         },
+        ChatToolDefinition {
+            r#type: "function".to_string(),
+            function: ChatToolFunctionDefinition {
+                name: "send_wechat_message".to_string(),
+                description: "Call this when the user explicitly asks to send a WeChat message. The app will ask the user to confirm before sending.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "recipient_alias": {
+                            "type": "string",
+                            "description": "WeChat contact name or alias, for example 潘婕"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Message text to send"
+                        }
+                    },
+                    "required": ["recipient_alias", "message"]
+                }),
+            },
+        },
     ]
 }
 
@@ -706,12 +742,31 @@ fn native_tool_call_to_local(call: ChatCompletionToolCall) -> Option<LocalToolCa
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string()),
             query: None,
+            recipient_alias: None,
+            message: None,
         }),
         "search_note" | "search_notes" | "search" => Some(LocalToolCall {
             tool: "search".to_string(),
             content: None,
             query: arguments
                 .get("query")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string()),
+            recipient_alias: None,
+            message: None,
+        }),
+        "send_wechat_message" | "wechat" | "send_wechat" => Some(LocalToolCall {
+            tool: "wechat".to_string(),
+            content: None,
+            query: None,
+            recipient_alias: arguments
+                .get("recipient_alias")
+                .or_else(|| arguments.get("recipient"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string()),
+            message: arguments
+                .get("message")
+                .or_else(|| arguments.get("content"))
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string()),
         }),
@@ -760,15 +815,48 @@ fn execute_local_tool_calls(
         .map(|call| match call.tool.trim().to_ascii_lowercase().as_str() {
             "note" => execute_note_tool(app, call, source_question, source_answer, created_at),
             "search" => execute_search_tool(app, call),
+            "wechat" => prepare_wechat_tool(call),
             other => LocalToolResult {
                 tool: other.to_string(),
                 ok: false,
                 message: "未知本地工具，已忽略。".to_string(),
                 query: None,
                 matches: Vec::new(),
+                requires_confirmation: false,
+                recipient_alias: None,
+                outgoing_message: None,
             },
         })
         .collect()
+}
+
+fn prepare_wechat_tool(call: &LocalToolCall) -> LocalToolResult {
+    let recipient_alias = call.recipient_alias.as_deref().unwrap_or("").trim();
+    let message = call.message.as_deref().unwrap_or("").trim();
+
+    if recipient_alias.is_empty() || message.is_empty() {
+        return LocalToolResult {
+            tool: "wechat".to_string(),
+            ok: false,
+            message: "微信联系人或消息为空，已拒绝执行。".to_string(),
+            query: None,
+            matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: Some(recipient_alias.to_string()),
+            outgoing_message: Some(message.to_string()),
+        };
+    }
+
+    LocalToolResult {
+        tool: "wechat".to_string(),
+        ok: true,
+        message: "检测到微信发送请求，请确认后执行。".to_string(),
+        query: None,
+        matches: Vec::new(),
+        requires_confirmation: true,
+        recipient_alias: Some(recipient_alias.to_string()),
+        outgoing_message: Some(message.to_string()),
+    }
 }
 
 fn execute_note_tool(
@@ -786,6 +874,9 @@ fn execute_note_tool(
             message: "笔记内容为空，未写入。".to_string(),
             query: None,
             matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: None,
+            outgoing_message: None,
         };
     }
 
@@ -796,6 +887,9 @@ fn execute_note_tool(
             message: format!("已保存到本地笔记：{note_id}"),
             query: None,
             matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: None,
+            outgoing_message: None,
         },
         Err(error) => LocalToolResult {
             tool: "note".to_string(),
@@ -803,6 +897,9 @@ fn execute_note_tool(
             message: format!("笔记写入失败：{error}"),
             query: None,
             matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: None,
+            outgoing_message: None,
         },
     }
 }
@@ -816,6 +913,9 @@ fn execute_search_tool(app: &AppHandle, call: &LocalToolCall) -> LocalToolResult
             message: "搜索关键词为空。".to_string(),
             query: Some(String::new()),
             matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: None,
+            outgoing_message: None,
         };
     }
 
@@ -832,6 +932,9 @@ fn execute_search_tool(app: &AppHandle, call: &LocalToolCall) -> LocalToolResult
                 message,
                 query: Some(query.to_string()),
                 matches,
+                requires_confirmation: false,
+                recipient_alias: None,
+                outgoing_message: None,
             }
         }
         Err(error) => LocalToolResult {
@@ -840,6 +943,9 @@ fn execute_search_tool(app: &AppHandle, call: &LocalToolCall) -> LocalToolResult
             message: format!("笔记搜索失败：{error}"),
             query: Some(query.to_string()),
             matches: Vec::new(),
+            requires_confirmation: false,
+            recipient_alias: None,
+            outgoing_message: None,
         },
     }
 }
@@ -924,6 +1030,41 @@ fn search_notes(app: &AppHandle, query: &str) -> Result<Vec<NoteSearchMatch>, St
     Ok(matches)
 }
 
+fn load_profile_memory(app: &AppHandle) -> Result<String, String> {
+    let path = crate::storage::profile_path(app)?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("Failed to create profile directory: {error}"))?;
+        }
+        fs::write(&path, "微信小号：潘婕\n")
+            .map_err(|error| format!("Failed to initialize profile file: {error}"))?;
+    }
+
+    fs::read_to_string(path).map_err(|error| format!("Failed to read profile file: {error}"))
+}
+
+#[tauri::command]
+pub(crate) fn log_agent_tool_call(
+    app: AppHandle,
+    tool: String,
+    status: String,
+    recipient_alias: Option<String>,
+    message: Option<String>,
+    detail: Option<String>,
+) -> Result<(), String> {
+    crate::storage::append_agent_tool_call_log(
+        &app,
+        &AgentToolCallLogEntry {
+            timestamp: Utc::now().timestamp_millis(),
+            tool,
+            status,
+            recipient_alias,
+            message_preview: message.map(|value| sanitize_text(&value, 160)),
+            detail,
+        },
+    )
+}
+
 fn build_responses_input(
     system_prompt: Option<&str>,
     short_term_memory: &[MemoryMessage],
@@ -951,10 +1092,11 @@ fn build_responses_input(
     sections.join("\n\n")
 }
 
-fn build_chat_system_prompt() -> String {
+fn build_chat_system_prompt(profile_memory: &str) -> String {
     format!(
-        "{}\n\n{}",
+        "{}\n\n[User Profile]\n{}\n\n{}",
         ASK_SYSTEM_PROMPT,
+        profile_memory.trim(),
         "本地工具能力：\n\
 1. save_note：当用户明确表达“帮我记一下 / 记住 / 记录一下 / 加到笔记”等意思时使用，把需要保存的内容写入本地笔记。\n\
 2. search_note：当用户明确表达“去笔记里找 / 查一下笔记 / 我之前记过什么 / 从笔记中寻找”等意思时使用，搜索本地笔记。\n\
@@ -1398,6 +1540,32 @@ fn insert_record(
         .map_err(|error| format!("Failed to write history: {error}"))?;
 
     Ok(connection.last_insert_rowid())
+}
+
+fn find_recent_success_record(
+    app: &AppHandle,
+    conversation_id: i64,
+    question: &str,
+    prompt_mode: &str,
+    min_created_at: i64,
+) -> Result<Option<HistoryRecord>, String> {
+    let connection = crate::storage::open_database(app)?;
+    connection
+        .query_row(
+            "SELECT id, conversation_id, question, answer, raw_response, fallback_notice, created_at, model, api_url, latency_ms, status, error_message
+             FROM qa_records
+             WHERE conversation_id = ?1
+               AND question = ?2
+               AND status = 'success'
+               AND prompt_mode = ?3
+               AND created_at >= ?4
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![conversation_id, question, prompt_mode, min_created_at],
+            map_history_record,
+        )
+        .optional()
+        .map_err(|error| format!("Failed to inspect duplicate question: {error}"))
 }
 
 fn map_history_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRecord> {

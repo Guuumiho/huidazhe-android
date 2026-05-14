@@ -18,6 +18,8 @@ import {
   showConversationModeModal,
 } from './ui.js';
 
+const inFlightQuestionKeys = new Set();
+
 function getPendingRecords(conversationId) {
   return state.pendingRecordsByConversation.get(conversationId) || [];
 }
@@ -275,6 +277,81 @@ function closeNoteSearchModal() {
   els.noteSearchModal?.classList.add('hidden');
 }
 
+let pendingWechatRequest = null;
+
+function closeWechatConfirmModal() {
+  els.wechatConfirmModal?.classList.add('hidden');
+  pendingWechatRequest = null;
+}
+
+async function logAgentToolCall(status, detail = '') {
+  if (!pendingWechatRequest) {
+    return;
+  }
+
+  await invoke('log_agent_tool_call', {
+    tool: 'send_wechat_message',
+    status,
+    recipientAlias: pendingWechatRequest.recipientAlias,
+    message: pendingWechatRequest.message,
+    detail,
+  });
+}
+
+function showWechatConfirmModal(result) {
+  const recipientAlias = result.recipientAlias || '';
+  const message = result.outgoingMessage || '';
+  if (!recipientAlias || !message || !els.wechatConfirmModal) {
+    setFormMessage('微信联系人或消息为空，已拒绝执行。', 'error');
+    return;
+  }
+
+  pendingWechatRequest = { recipientAlias, message };
+  els.wechatRecipient.textContent = recipientAlias;
+  els.wechatMessage.textContent = message;
+  els.wechatConfirmModal.classList.remove('hidden');
+
+  invoke('log_agent_tool_call', {
+    tool: 'send_wechat_message',
+    status: 'pending_confirmation',
+    recipientAlias,
+    message,
+    detail: 'Model requested WeChat automation; waiting for user confirmation.',
+  }).catch(() => {});
+}
+
+async function confirmWechatSend() {
+  if (!pendingWechatRequest) {
+    return;
+  }
+
+  const request = pendingWechatRequest;
+  try {
+    if (!window.HuidazheWechat?.startAutomation) {
+      throw new Error('Android WeChat automation bridge is not available.');
+    }
+    const rawResult = window.HuidazheWechat.startAutomation(JSON.stringify(request));
+    let parsedResult = {};
+    try {
+      parsedResult = JSON.parse(rawResult || '{}');
+    } catch (_) {
+      parsedResult = { ok: false, message: rawResult || 'Unknown automation result.' };
+    }
+    await logAgentToolCall(parsedResult.ok ? 'started' : 'failed', parsedResult.message || '');
+    setFormMessage(parsedResult.message || '微信自动化已启动。', parsedResult.ok ? 'success' : 'error');
+  } catch (error) {
+    await logAgentToolCall('failed', String(error));
+    setFormMessage(String(error), 'error');
+  } finally {
+    closeWechatConfirmModal();
+  }
+}
+
+async function cancelWechatSend() {
+  await logAgentToolCall('cancelled_by_user', 'User cancelled before starting automation.');
+  closeWechatConfirmModal();
+}
+
 function showNoteSearchModal(result) {
   if (!els.noteSearchModal || !els.noteSearchBody || !els.noteSearchTitle) {
     return;
@@ -323,6 +400,7 @@ function handleLocalToolResults(toolResults = []) {
 
   const noteResults = toolResults.filter((result) => result.tool === 'note');
   const searchResults = toolResults.filter((result) => result.tool === 'search');
+  const wechatResults = toolResults.filter((result) => result.tool === 'wechat');
 
   if (noteResults.length) {
     const latestNote = noteResults[noteResults.length - 1];
@@ -331,6 +409,11 @@ function handleLocalToolResults(toolResults = []) {
 
   if (searchResults.length) {
     showNoteSearchModal(searchResults[searchResults.length - 1]);
+  }
+
+  const pendingWechat = wechatResults.find((result) => result.requiresConfirmation);
+  if (pendingWechat) {
+    showWechatConfirmModal(pendingWechat);
   }
 }
 
@@ -615,6 +698,13 @@ async function submitQuestion(draftQuestion, activeConversationId) {
     return;
   }
 
+  const inFlightKey = `${activeConversationId}:${state.memoryMode}:${draftQuestion}`;
+  if (inFlightQuestionKeys.has(inFlightKey)) {
+    setFormMessage('同一个问题正在发送中，请等本轮完成。', 'error');
+    return;
+  }
+  inFlightQuestionKeys.add(inFlightKey);
+
   els.askButton.disabled = true;
   els.saveSettings.disabled = true;
   els.questionInput.value = '';
@@ -654,6 +744,7 @@ async function submitQuestion(draftQuestion, activeConversationId) {
     removeRenderedPendingRecord(activeConversationId, tempRecord.id);
     setFormMessage(String(error), 'error');
   } finally {
+    inFlightQuestionKeys.delete(inFlightKey);
     if (state.currentConversationId === activeConversationId) {
       await loadRecords();
     }
@@ -715,5 +806,11 @@ export function bindChatEvents() {
 
   els.askForm.addEventListener('submit', askQuestion);
   els.closeNoteSearch?.addEventListener('click', closeNoteSearchModal);
+  els.confirmWechatSend?.addEventListener('click', () => {
+    confirmWechatSend().catch((error) => setFormMessage(String(error), 'error'));
+  });
+  els.cancelWechatSend?.addEventListener('click', () => {
+    cancelWechatSend().catch((error) => setFormMessage(String(error), 'error'));
+  });
   resizeQuestionInput();
 }

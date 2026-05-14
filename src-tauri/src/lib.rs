@@ -18,6 +18,8 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 const DB_FILE_NAME: &str = "qa_records.db";
 const MODEL_CALL_LOG_FILE_NAME: &str = "model_calls.jsonl";
 const NOTE_FILE_NAME: &str = "note.json";
+const PROFILE_FILE_NAME: &str = "profile.md";
+const AGENT_TOOL_CALL_LOG_FILE_NAME: &str = "agent_tool_calls.jsonl";
 const SHORT_TERM_MEMORY_ROUNDS: usize = 6;
 const SESSION_MEMORY_RECENT_ROUNDS: usize = 3;
 const SESSION_MEMORY_MAX_TEXT_CHARS: usize = 1200;
@@ -86,6 +88,16 @@ struct LocalToolResult {
     message: String,
     query: Option<String>,
     matches: Vec<NoteSearchMatch>,
+    requires_confirmation: bool,
+    recipient_alias: Option<String>,
+    outgoing_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogExportFile {
+    file_name: String,
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -241,6 +253,17 @@ struct ModelCallLogEntry {
     response_ok: bool,
     response_body: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentToolCallLogEntry {
+    timestamp: i64,
+    tool: String,
+    status: String,
+    recipient_alias: Option<String>,
+    message_preview: Option<String>,
+    detail: Option<String>,
 }
 
 /*
@@ -448,6 +471,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             settings::load_settings,
             settings::save_settings,
+            storage::collect_model_log_exports,
+            storage::export_model_logs,
             chat::list_conversations,
             chat::create_conversation,
             chat::delete_conversation,
@@ -456,6 +481,7 @@ pub fn run() {
             chat::list_history_records,
             chat::get_history_item,
             chat::ask,
+            chat::log_agent_tool_call,
             knowledge::get_conversation_map,
             knowledge::list_conversation_map_events,
             knowledge::refresh_conversation_map,

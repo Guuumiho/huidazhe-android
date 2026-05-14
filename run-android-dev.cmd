@@ -45,6 +45,12 @@ if not exist "%ANDROID_DIR%" (
   exit /b 1
 )
 
+powershell -ExecutionPolicy Bypass -File "%ROOT%scripts\sync-android-overrides.ps1"
+if errorlevel 1 (
+  echo [ERROR] Failed to sync Android overrides.
+  exit /b 1
+)
+
 echo Starting Android dev run...
 echo Make sure your phone has USB debugging enabled and is connected.
 "%CARGO%" tauri android dev

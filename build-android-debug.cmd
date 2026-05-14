@@ -47,6 +47,12 @@ if not exist "%ANDROID_DIR%" (
   exit /b 1
 )
 
+powershell -ExecutionPolicy Bypass -File "%ROOT%scripts\sync-android-overrides.ps1"
+if errorlevel 1 (
+  echo [ERROR] Failed to sync Android overrides.
+  exit /b 1
+)
+
 echo Building Android debug APK for arm64 phones...
 "%CARGO%" tauri android build --debug --target aarch64 --apk --ci
 if errorlevel 1 (

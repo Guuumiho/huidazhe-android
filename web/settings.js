@@ -73,6 +73,29 @@ export function bindSettingsEvents(onThemeChange) {
     }
   });
 
+  els.exportModelLogs?.addEventListener('click', async () => {
+    setFormMessage('');
+    els.exportModelLogs.disabled = true;
+    try {
+      const files = await invoke('collect_model_log_exports');
+      if (window.HuidazheLogs?.exportToDownloads) {
+        const rawResult = window.HuidazheLogs.exportToDownloads(JSON.stringify({ files }));
+        const result = JSON.parse(rawResult);
+        if (!result.ok) {
+          throw new Error(result.message || '导出失败');
+        }
+        setFormMessage(result.message || '模型日志已导出到下载目录', 'success');
+      } else {
+        const exportPath = await invoke('export_model_logs');
+        setFormMessage(`模型日志已导出：${exportPath}`, 'success');
+      }
+    } catch (error) {
+      setFormMessage(String(error), 'error');
+    } finally {
+      els.exportModelLogs.disabled = false;
+    }
+  });
+
   els.themeSelect.addEventListener('change', () => {
     applyTheme(els.themeSelect.value);
     onThemeChange?.();

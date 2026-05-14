@@ -182,6 +182,93 @@ pub(crate) fn note_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join(NOTE_FILE_NAME))
 }
 
+pub(crate) fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join(PROFILE_FILE_NAME))
+}
+
+pub(crate) fn agent_tool_call_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join(AGENT_TOOL_CALL_LOG_FILE_NAME))
+}
+
+#[tauri::command]
+pub(crate) fn collect_model_log_exports(app: AppHandle) -> Result<Vec<LogExportFile>, String> {
+    let candidates = [
+        (model_call_log_path(&app)?, MODEL_CALL_LOG_FILE_NAME),
+        (agent_tool_call_log_path(&app)?, AGENT_TOOL_CALL_LOG_FILE_NAME),
+        (note_path(&app)?, NOTE_FILE_NAME),
+        (profile_path(&app)?, PROFILE_FILE_NAME),
+    ];
+
+    let mut files = Vec::new();
+    for (source_path, file_name) in candidates {
+        if source_path.exists() {
+            let content = fs::read_to_string(&source_path)
+                .map_err(|error| format!("Failed to read {file_name}: {error}"))?;
+            files.push(LogExportFile {
+                file_name: file_name.to_string(),
+                content,
+            });
+        }
+    }
+
+    let exported_summary = if files.is_empty() {
+        "No log files existed yet.".to_string()
+    } else {
+        files
+            .iter()
+            .map(|file| file.file_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    files.push(LogExportFile {
+        file_name: "README.txt".to_string(),
+        content: format!(
+            "Huidazhe log export\nExported at: {}\nExported files: {}\n\nsettings.json is not exported because it may contain your API key.\n",
+            Utc::now().to_rfc3339(),
+            exported_summary
+        ),
+    });
+
+    Ok(files)
+}
+
+#[tauri::command]
+pub(crate) fn export_model_logs(app: AppHandle) -> Result<String, String> {
+    let export_dir = public_download_dir(&app)?.join("huidazhe-logs");
+    fs::create_dir_all(&export_dir).map_err(|error| format!("Failed to create export directory: {error}"))?;
+
+    let candidates = [
+        (model_call_log_path(&app)?, MODEL_CALL_LOG_FILE_NAME),
+        (agent_tool_call_log_path(&app)?, AGENT_TOOL_CALL_LOG_FILE_NAME),
+        (note_path(&app)?, NOTE_FILE_NAME),
+        (profile_path(&app)?, PROFILE_FILE_NAME),
+    ];
+
+    let mut exported_files = Vec::new();
+    for (source_path, file_name) in candidates {
+        if source_path.exists() {
+            fs::copy(&source_path, export_dir.join(file_name))
+                .map_err(|error| format!("Failed to export {file_name}: {error}"))?;
+            exported_files.push(file_name);
+        }
+    }
+
+    let exported_summary = if exported_files.is_empty() {
+        "No log files existed yet.".to_string()
+    } else {
+        exported_files.join(", ")
+    };
+    let readme = format!(
+        "Huidazhe log export\nExported at: {}\nExported files: {}\n\nsettings.json is not exported because it may contain your API key.\n",
+        Utc::now().to_rfc3339(),
+        exported_summary
+    );
+    fs::write(export_dir.join("README.txt"), readme)
+        .map_err(|error| format!("Failed to write export README: {error}"))?;
+
+    Ok(export_dir.to_string_lossy().to_string())
+}
+
 pub(crate) fn append_model_call_log(app: &AppHandle, entry: &ModelCallLogEntry) -> Result<(), String> {
     let path = model_call_log_path(app)?;
     if let Some(parent) = path.parent() {
@@ -203,6 +290,30 @@ pub(crate) fn append_model_call_log(app: &AppHandle, entry: &ModelCallLogEntry) 
     Ok(())
 }
 
+pub(crate) fn append_agent_tool_call_log(
+    app: &AppHandle,
+    entry: &AgentToolCallLogEntry,
+) -> Result<(), String> {
+    let path = agent_tool_call_log_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("Failed to create tool log directory: {error}"))?;
+    }
+
+    let line = serde_json::to_string(entry).map_err(|error| format!("Failed to serialize tool log entry: {error}"))?;
+    let mut content = line;
+    content.push('\n');
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Failed to open tool log file: {error}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("Failed to write tool log file: {error}"))?;
+    Ok(())
+}
+
 pub(crate) fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
@@ -213,4 +324,10 @@ pub(crate) fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|error| format!("Failed to locate data directory: {error}"))
+}
+
+fn public_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .download_dir()
+        .map_err(|error| format!("Failed to locate Download directory: {error}"))
 }

@@ -307,6 +307,14 @@ h2 {
   gap: 8px;
 }
 
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .settings-grid {
   margin-top: 12px;
   display: grid;
@@ -1168,6 +1176,36 @@ h2 {
   color: var(--markdown-body-color);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.wechat-confirm-card {
+  max-width: 420px;
+}
+
+.wechat-confirm-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(183, 157, 132, 0.35);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: var(--muted);
+}
+
+.wechat-confirm-row strong {
+  color: var(--text);
+}
+
+.wechat-confirm-message {
+  margin-top: 12px;
+  min-height: 88px;
+  white-space: pre-wrap;
+  line-height: 1.6;
+  border: 1px solid rgba(183, 157, 132, 0.35);
+  border-radius: 14px;
+  padding: 12px;
+  color: var(--markdown-body-color);
+  background: rgba(255, 253, 248, 0.88);
 }
 
 .map-node {

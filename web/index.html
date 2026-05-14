@@ -36,7 +36,10 @@
               <p class="eyebrow">Settings</p>
               <h2>接口配置</h2>
             </div>
-            <button id="save-settings" class="ghost-button" type="button">保存配置</button>
+            <div class="settings-actions">
+              <button id="export-model-logs" class="ghost-button" type="button">导出模型日志</button>
+              <button id="save-settings" class="ghost-button" type="button">保存配置</button>
+            </div>
           </div>
 
           <div class="settings-grid">
@@ -189,6 +192,28 @@
           <button id="close-note-search" class="ghost-button note-search-close" type="button">×</button>
         </div>
         <div id="note-search-body" class="note-search-body"></div>
+      </div>
+    </div>
+
+    <div id="wechat-confirm-modal" class="note-search-modal hidden">
+      <div class="note-search-card wechat-confirm-card">
+        <div class="note-search-header">
+          <div>
+            <p class="eyebrow">Local Agent Tool</p>
+            <h2>确认发送微信</h2>
+          </div>
+          <button id="cancel-wechat-send" class="ghost-button note-search-close" type="button">×</button>
+        </div>
+        <div class="note-search-body">
+          <div class="wechat-confirm-row">
+            <span>联系人</span>
+            <strong id="wechat-recipient"></strong>
+          </div>
+          <div class="wechat-confirm-message" id="wechat-message"></div>
+          <div class="mode-modal-actions">
+            <button id="confirm-wechat-send" class="primary-button" type="button">确认执行</button>
+          </div>
+        </div>
       </div>
     </div>
 

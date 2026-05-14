@@ -29,6 +29,9 @@ settings.json
 qa_records.db
 model_calls.jsonl
 note.json
+profile.md
+wechat_send_message.json
+agent_tool_calls.jsonl
 .env
 .env.*
 local.properties

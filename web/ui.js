@@ -17,6 +17,7 @@ export const els = {
   toggleSettings: document.querySelector('#toggle-settings'),
   toggleKnowledge: document.querySelector('#toggle-knowledge'),
   settingsPanel: document.querySelector('#settings-panel'),
+  exportModelLogs: document.querySelector('#export-model-logs'),
   saveSettings: document.querySelector('#save-settings'),
   askForm: document.querySelector('#ask-form'),
   askButton: document.querySelector('#ask-button'),
@@ -52,6 +53,11 @@ export const els = {
   noteSearchTitle: document.querySelector('#note-search-title'),
   noteSearchBody: document.querySelector('#note-search-body'),
   closeNoteSearch: document.querySelector('#close-note-search'),
+  wechatConfirmModal: document.querySelector('#wechat-confirm-modal'),
+  wechatRecipient: document.querySelector('#wechat-recipient'),
+  wechatMessage: document.querySelector('#wechat-message'),
+  confirmWechatSend: document.querySelector('#confirm-wechat-send'),
+  cancelWechatSend: document.querySelector('#cancel-wechat-send'),
 };
 
 const QUESTION_INPUT_BASE_HEIGHT = 56;
